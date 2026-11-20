@@ -1,0 +1,1146 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Riot 通報履歴インフォグラフィックメーカー</title>
+
+  <!-- Google Fonts: Inter & Noto Sans JP -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700;800&family=Noto+Sans+JP:wght@400;500;700;800&display=swap" rel="stylesheet" />
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Noto Sans JP"', 'Inter', 'sans-serif'],
+            mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
+          }
+        }
+      }
+    };
+  </script>
+
+  <!-- JSZip 3.10.1 (ZIP内の通報JSON自動検出用) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <style>
+    body {
+      font-family: 'Noto Sans JP', 'Inter', sans-serif;
+      background-color: #f1f5f9;
+      color: #0f172a;
+    }
+
+    /* カスタムスクロールバー */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8;
+    }
+
+    /* ドラッグ＆ドロップ強調 */
+    .drop-active {
+      border-color: #0d9488 !important;
+      background-color: #f0fdfa !important;
+    }
+
+    /* プレビュー背景のチェック柄（透過・境界視認用） */
+    .preview-stage {
+      background-color: #e2e8f0;
+      background-image:
+        radial-gradient(#cbd5e1 1px, transparent 1px);
+      background-size: 20px 20px;
+    }
+
+    /* トーストアニメーション */
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-toast {
+      animation: slideUp 0.22s ease-out forwards;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+  <!-- トースト通知コンテナ -->
+  <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+  <!-- ヘッダー -->
+  <header class="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200 px-4 sm:px-6 py-3">
+    <div class="max-w-[1600px] mx-auto flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-teal-600 to-rose-500 flex items-center justify-center text-white shadow-sm">
+          <i data-lucide="bar-chart-3" class="w-5 h-5"></i>
+        </div>
+        <div>
+          <h1 class="text-sm sm:text-base font-extrabold text-slate-900 tracking-tight leading-tight">
+            Riot 通報履歴インフォグラフィック作成
+          </h1>
+          <p class="text-[11px] text-slate-500">
+            VALORANT / LoL / TFT の通報データをシンプルな画像に変換
+          </p>
+        </div>
+      </div>
+
+      <!-- プライバシーバッジ -->
+      <div class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-medium">
+        <i data-lucide="shield-check" class="w-3.5 h-3.5 shrink-0"></i>
+        <span>ブラウザ内完結・データ外部送信なし</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- メイン2カラムレイアウト -->
+  <div class="flex-1 max-w-[1600px] w-full mx-auto flex flex-col lg:flex-row">
+
+    <!-- ==================== 左サイドバー：入力＆カスタマイズ ==================== -->
+    <aside class="w-full lg:w-[400px] xl:w-[420px] shrink-0 bg-white border-b lg:border-b-0 lg:border-r border-slate-200 lg:h-[calc(100vh-61px)] lg:sticky lg:top-[61px] overflow-y-auto p-4 sm:p-5 space-y-6">
+
+      <!-- 1. データ読み込みセクション -->
+      <section class="space-y-3">
+        <div class="flex items-center justify-between">
+          <h2 class="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+            <i data-lucide="upload" class="w-3.5 h-3.5 text-teal-600"></i>
+            1. データの読み込み
+          </h2>
+          <button id="sample-btn" type="button" class="text-xs font-semibold text-teal-700 hover:text-teal-900 hover:underline flex items-center gap-1 transition">
+            <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+            サンプルデータで試す
+          </button>
+        </div>
+
+        <!-- ドロップゾーン -->
+        <div id="drop-zone" class="border-2 border-dashed border-slate-300 hover:border-teal-500 rounded-2xl p-4 text-center cursor-pointer transition bg-slate-50/70">
+          <input type="file" id="file-input" accept=".json,.zip,application/json,application/zip" class="hidden" />
+          <div class="w-10 h-10 mx-auto mb-2 rounded-xl bg-white border border-slate-200 shadow-sm flex items-center justify-center text-teal-600">
+            <i data-lucide="file-up" class="w-5 h-5"></i>
+          </div>
+          <p class="text-xs font-bold text-slate-700">JSON または RiotデータZIPをドロップ</p>
+          <p class="text-[11px] text-slate-500 mt-0.5">クリックしてファイルを選択（ZIP内の通報JSONを自動検出）</p>
+        </div>
+
+        <!-- ZIP内ゲーム切替エリア（複数検出時のみ表示） -->
+        <div id="zip-game-switcher" class="hidden p-3 rounded-xl bg-teal-50/80 border border-teal-200 space-y-2">
+          <div class="text-[11px] font-bold text-teal-800 flex items-center gap-1.5">
+            <i data-lucide="folder-archive" class="w-3.5 h-3.5"></i>
+            <span>ZIPから検出したゲームデータ（切替可能）</span>
+          </div>
+          <div id="zip-game-buttons" class="flex flex-wrap gap-1.5"></div>
+        </div>
+
+        <!-- JSON直接貼り付け（折りたたみ可能） -->
+        <details class="group rounded-xl border border-slate-200 bg-slate-50/60 overflow-hidden">
+          <summary class="px-3.5 py-2.5 text-xs font-semibold text-slate-700 cursor-pointer flex items-center justify-between select-none hover:bg-slate-100/80 transition">
+            <span class="flex items-center gap-1.5">
+              <i data-lucide="code-2" class="w-3.5 h-3.5 text-slate-500"></i>
+              JSONテキストを直接貼り付ける
+            </span>
+            <i data-lucide="chevron-down" class="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180"></i>
+          </summary>
+          <div class="p-3 pt-0 space-y-2">
+            <textarea id="json-paste-input" rows="5" placeholder='{"reports_made": {"CHEATING": 10}, "reports_received": {"AFK": 2}}' class="w-full rounded-lg border border-slate-300 bg-white p-2.5 text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500"></textarea>
+            <button id="apply-json-btn" type="button" class="w-full py-2 rounded-lg bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold transition flex items-center justify-center gap-1.5">
+              <i data-lucide="check" class="w-3.5 h-3.5"></i>
+              貼り付けたJSONを反映
+            </button>
+          </div>
+        </details>
+      </section>
+
+      <hr class="border-slate-200" />
+
+      <!-- 2. テキスト設定 -->
+      <section class="space-y-3">
+        <h2 class="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+          <i data-lucide="type" class="w-3.5 h-3.5 text-teal-600"></i>
+          2. タイトル設定
+        </h2>
+        <div class="space-y-2.5">
+          <div>
+            <label for="title-input" class="block text-xs font-semibold text-slate-700 mb-1">タイトル</label>
+            <input id="title-input" type="text" value="VALORANT 通報履歴まとめ" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500" />
+          </div>
+          <div>
+            <label for="subtitle-input" class="block text-xs font-semibold text-slate-700 mb-1">サブタイトル / プレイヤー名 <span class="text-slate-400 font-normal">(任意)</span></label>
+            <input id="subtitle-input" type="text" placeholder="例: PlayerName#JP1 / 2020-2026" class="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500" />
+          </div>
+        </div>
+      </section>
+
+      <hr class="border-slate-200" />
+
+      <!-- 3. テーマ＆サイズ設定 -->
+      <section class="space-y-4">
+        <h2 class="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+          <i data-lucide="palette" class="w-3.5 h-3.5 text-teal-600"></i>
+          3. デザイン・サイズ
+        </h2>
+
+        <!-- テーマ切替 -->
+        <div>
+          <span class="block text-xs font-semibold text-slate-700 mb-2">カラーテーマ</span>
+          <div class="grid grid-cols-3 gap-2" id="theme-selector">
+            <button type="button" data-theme="light" class="theme-btn p-2.5 rounded-xl border-2 border-teal-600 bg-teal-50/50 text-left transition">
+              <div class="flex items-center gap-1 mb-1.5">
+                <span class="w-3.5 h-3.5 rounded-full bg-[#f7f8fa] border border-slate-300"></span>
+                <span class="w-3.5 h-3.5 rounded-full bg-[#0d8585]"></span>
+                <span class="w-3.5 h-3.5 rounded-full bg-[#e05543]"></span>
+              </div>
+              <div class="text-xs font-bold text-slate-800">ライト</div>
+            </button>
+            <button type="button" data-theme="dark" class="theme-btn p-2.5 rounded-xl border border-slate-200 hover:border-slate-300 bg-white text-left transition">
+              <div class="flex items-center gap-1 mb-1.5">
+                <span class="w-3.5 h-3.5 rounded-full bg-[#0f1923] border border-slate-600"></span>
+                <span class="w-3.5 h-3.5 rounded-full bg-[#38bdf8]"></span>
+                <span class="w-3.5 h-3.5 rounded-full bg-[#ff4655]"></span>
+              </div>
+              <div class="text-xs font-bold text-slate-800">ダーク</div>
+            </button>
+            <button type="button" data-theme="minimal" class="theme-btn p-2.5 rounded-xl border border-slate-200 hover:border-slate-300 bg-white text-left transition">
+              <div class="flex items-center gap-1 mb-1.5">
+                <span class="w-3.5 h-3.5 rounded-full bg-white border border-slate-300"></span>
+                <span class="w-3.5 h-3.5 rounded-full bg-[#1e293b]"></span>
+                <span class="w-3.5 h-3.5 rounded-full bg-[#94a3b8]"></span>
+              </div>
+              <div class="text-xs font-bold text-slate-800">ミニマル</div>
+            </button>
+          </div>
+        </div>
+
+        <!-- 画像比率 -->
+        <div>
+          <span class="block text-xs font-semibold text-slate-700 mb-2">画像サイズ / 比率</span>
+          <div class="grid grid-cols-3 gap-2" id="ratio-selector">
+            <button type="button" data-ratio="portrait" class="ratio-btn py-2 px-2 rounded-xl border-2 border-teal-600 bg-teal-50/50 text-center transition">
+              <div class="text-xs font-bold text-slate-800">縦長 (3:4)</div>
+              <div class="text-[10px] text-slate-500 font-mono">1200×1600</div>
+            </button>
+            <button type="button" data-ratio="square" class="ratio-btn py-2 px-2 rounded-xl border border-slate-200 hover:border-slate-300 bg-white text-center transition">
+              <div class="text-xs font-bold text-slate-800">正方形 (1:1)</div>
+              <div class="text-[10px] text-slate-500 font-mono">1200×1200</div>
+            </button>
+            <button type="button" data-ratio="landscape" class="ratio-btn py-2 px-2 rounded-xl border border-slate-200 hover:border-slate-300 bg-white text-center transition">
+              <div class="text-xs font-bold text-slate-800">横長 (16:9)</div>
+              <div class="text-[10px] text-slate-500 font-mono">1600×900</div>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <hr class="border-slate-200" />
+
+      <!-- 4. 表示設定 -->
+      <section class="space-y-3">
+        <h2 class="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+          <i data-lucide="sliders-horizontal" class="w-3.5 h-3.5 text-teal-600"></i>
+          4. 表示オプション
+        </h2>
+
+        <div>
+          <label for="sort-select" class="block text-xs font-semibold text-slate-700 mb-1">並び順</label>
+          <select id="sort-select" class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-500/30 focus:border-teal-500">
+            <option value="total">合計件数が多い順</option>
+            <option value="received">受けた通報が多い順</option>
+            <option value="made">行った通報が多い順</option>
+          </select>
+        </div>
+
+        <label class="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer hover:bg-slate-100/70 transition">
+          <span class="text-xs font-medium text-slate-700">英語の元項目名を小さく併記</span>
+          <input id="show-en-toggle" type="checkbox" class="w-4 h-4 accent-teal-600 rounded" />
+        </label>
+
+        <label class="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer hover:bg-slate-100/70 transition">
+          <span class="text-xs font-medium text-slate-700">合計 0 件の項目を非表示</span>
+          <input id="hide-zero-toggle" type="checkbox" checked class="w-4 h-4 accent-teal-600 rounded" />
+        </label>
+      </section>
+    </aside>
+
+    <!-- ==================== 右メインエリア：リアルタイムプレビュー＆出力 ==================== -->
+    <main class="flex-1 min-w-0 flex flex-col">
+      <!-- アクションバー -->
+      <div class="bg-white border-b border-slate-200 px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3">
+        <div class="flex items-center gap-2 text-xs text-slate-600">
+          <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 font-mono font-semibold text-slate-700" id="resolution-badge">1200 × 1600 px</span>
+          <span id="data-source-badge" class="text-slate-500 truncate max-w-[240px]">サンプルデータ表示中</span>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2">
+          <button id="copy-btn" type="button" class="px-4 py-2 rounded-xl bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 text-xs font-bold transition flex items-center gap-1.5 shadow-sm">
+            <i data-lucide="copy" class="w-4 h-4 text-slate-600"></i>
+            <span>画像をクリップボードにコピー</span>
+          </button>
+          <button id="download-btn" type="button" class="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold transition flex items-center gap-1.5 shadow-sm shadow-teal-600/20">
+            <i data-lucide="download" class="w-4 h-4"></i>
+            <span>PNG画像をダウンロード</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Canvas プレビュー領域 -->
+      <div class="flex-1 preview-stage p-4 sm:p-8 flex items-center justify-center overflow-auto">
+        <div class="relative max-w-full flex items-center justify-center">
+          <canvas id="report-canvas" class="max-w-full max-h-[calc(100vh-170px)] w-auto h-auto rounded-2xl shadow-2xl border border-black/10 transition-all duration-200"></canvas>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ==================== JavaScript ==================== -->
+  <script>
+    /*************************************************************************
+     * 1. 定数・翻訳辞書・テーマ定義
+     *************************************************************************/
+    const TRANSLATION_DICT = {
+      'CHEATING': 'チート行為',
+      'RANK_MANIPULATION': 'ランク操作',
+      'COMMS_ABUSE_TEXT': 'テキスト暴言',
+      'COMMS_ABUSE_VOICE': 'ボイス暴言',
+      'SABOTAGING_TEAM': 'チーム妨害',
+      'BOTTING': 'ボット行為',
+      'ABUSING_GLITCHES': 'グリッチ悪用',
+      'AFK': '放置・離席',
+      'LEAVING_AFK': '放置・離席',
+      'LEAVING_THE_GAME': '放置・離席',
+      'INAPPROPRIATE_TEAM_NAME': '不適切なチーム名',
+      'OFFENSIVE_NAME': '不適切なプレイヤー名',
+      'INAPPROPRIATE_NAME': '不適切なプレイヤー名',
+      'VERBAL_ABUSE': '暴言・ハラスメント',
+      'HATE_SPEECH': 'ヘイトスピーチ',
+      'INTENTIONAL_FEEDING': '意図的なフィード',
+      'NEGATIVE_ATTITUDE': '消極的態度',
+      'THIRD_PARTY_TOOLS': '外部ツール使用',
+      'ASSISTING_ENEMY_TEAM': '利敵行為',
+      'GRIEFING': '迷惑行為',
+      'DISRESPECTFUL_BEHAVIOR': '不適切な言動',
+      'THREATS': '脅迫行為',
+      'SPAM': 'スパム行為',
+      'UNSPORTSMANLIKE_CONDUCT': 'スポーツマンシップ違反',
+      'OTHER': 'その他',
+    };
+
+    const THEMES = {
+      light: {
+        bg: '#f7f8f9',
+        cardBg: '#ffffff',
+        cardBorder: '#e2e8f0',
+        cardShadow: 'rgba(15, 23, 42, 0.06)',
+        title: '#18222f',
+        subtitle: '#64748b',
+        label: '#1e293b',
+        subLabel: '#94a3b8',
+        axisLine: '#cbd5e1',
+        valueText: '#1e293b',
+        madeColor: '#0d7c7c',      // 落ち着いたティール
+        receivedColor: '#dc5341',  // コーラルレッド
+        footerText: '#94a3b8',
+      },
+      dark: {
+        bg: '#0f1923',
+        cardBg: '#172432',
+        cardBorder: '#26384d',
+        cardShadow: 'rgba(0, 0, 0, 0.35)',
+        title: '#f8fafc',
+        subtitle: '#94a3b8',
+        label: '#e2e8f0',
+        subLabel: '#64748b',
+        axisLine: '#334155',
+        valueText: '#f1f5f9',
+        madeColor: '#38bdf8',      // ネオンシアン
+        receivedColor: '#ff4655',  // VALORANTレッド
+        footerText: '#475569',
+      },
+      minimal: {
+        bg: '#ffffff',
+        cardBg: '#f8fafc',
+        cardBorder: '#e2e8f0',
+        cardShadow: 'rgba(0, 0, 0, 0.03)',
+        title: '#0f172a',
+        subtitle: '#64748b',
+        label: '#1e293b',
+        subLabel: '#94a3b8',
+        axisLine: '#cbd5e1',
+        valueText: '#0f172a',
+        madeColor: '#1e293b',      // ダークグレー
+        receivedColor: '#94a3b8',  // ライトグレー
+        footerText: '#cbd5e1',
+      }
+    };
+
+    const RATIOS = {
+      portrait:  { width: 1200, height: 1600, label: '1200 × 1600 px' },
+      square:    { width: 1200, height: 1200, label: '1200 × 1200 px' },
+      landscape: { width: 1600, height: 900,  label: '1600 × 900 px' },
+    };
+
+    // デフォルトのサンプルデータ（VALORANT）
+    const SAMPLE_DATA = {
+      reports_made: {
+        AFK: 5,
+        BOTTING: 1,
+        CHEATING: 43,
+        COMMS_ABUSE_TEXT: 17,
+        COMMS_ABUSE_VOICE: 2,
+        INAPPROPRIATE_TEAM_NAME: 1,
+        RANK_MANIPULATION: 25,
+        SABOTAGING_TEAM: 9
+      },
+      reports_received: {
+        ABUSING_GLITCHES: 9,
+        AFK: 8,
+        BOTTING: 12,
+        CHEATING: 44,
+        COMMS_ABUSE_TEXT: 16,
+        COMMS_ABUSE_VOICE: 5,
+        INAPPROPRIATE_TEAM_NAME: 5,
+        OFFENSIVE_NAME: 2,
+        RANK_MANIPULATION: 32,
+        SABOTAGING_TEAM: 16
+      }
+    };
+
+    /*************************************************************************
+     * 2. アプリ状態管理
+     *************************************************************************/
+    const State = {
+      rawData: SAMPLE_DATA,
+      gameKey: 'valorant', // 'valorant' | 'lol' | 'tft' | 'custom'
+      sourceLabel: 'サンプルデータ (VALORANT)',
+      zipDetectedGames: [], // [{ key, label, defaultTitle, data }]
+      title: 'VALORANT 通報履歴まとめ',
+      subtitle: '',
+      theme: 'light',
+      ratio: 'portrait',
+      sortBy: 'total', // 'total' | 'received' | 'made'
+      showEnglish: false,
+      hideZero: true,
+    };
+
+    /*************************************************************************
+     * 3. ユーティリティ（翻訳・データ正規化・トースト）
+     *************************************************************************/
+    function translateCategory(rawKey) {
+      const norm = String(rawKey).trim().toUpperCase().replace(/[\s-]+/g, '_');
+      if (TRANSLATION_DICT[norm]) {
+        return TRANSLATION_DICT[norm];
+      }
+      // 未定義キーはアンダースコアをスペースに変えて見やすく整形
+      return norm
+        .split('_')
+        .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+        .join(' ');
+    }
+
+    /**
+     * 読み込んだJSONを通報アイテム配列へ正規化する
+     * reports_made / reports_received 形式のほか、フラットなオブジェクトにも対応
+     */
+    function normalizeReportData(json) {
+      if (!json || typeof json !== 'object') {
+        throw new Error('有効なJSONオブジェクトではありません。');
+      }
+
+      let madeObj = {};
+      let recvObj = {};
+
+      if ('reports_made' in json || 'reports_received' in json) {
+        madeObj = (json.reports_made && typeof json.reports_made === 'object') ? json.reports_made : {};
+        recvObj = (json.reports_received && typeof json.reports_received === 'object') ? json.reports_received : {};
+      } else {
+        // フラット形式の場合は「受けた通報」としてフォールバック
+        recvObj = json;
+      }
+
+      const keySet = new Set([...Object.keys(madeObj), ...Object.keys(recvObj)]);
+      const items = [];
+      let totalMade = 0;
+      let totalReceived = 0;
+
+      for (const rawKey of keySet) {
+        const made = Math.max(0, Number(madeObj[rawKey]) || 0);
+        const received = Math.max(0, Number(recvObj[rawKey]) || 0);
+        const total = made + received;
+        totalMade += made;
+        totalReceived += received;
+
+        items.push({
+          rawKey,
+          labelJa: translateCategory(rawKey),
+          made,
+          received,
+          total
+        });
+      }
+
+      return { items, totalMade, totalReceived };
+    }
+
+    function showToast(message, type = 'success') {
+      const container = document.getElementById('toast-container');
+      const styles = {
+        success: 'bg-slate-900 text-white border-slate-700',
+        error: 'bg-rose-600 text-white border-rose-500',
+        info: 'bg-teal-700 text-white border-teal-600'
+      };
+      const el = document.createElement('div');
+      el.className = `pointer-events-auto px-4 py-2.5 rounded-xl border shadow-xl text-xs font-semibold flex items-center gap-2 animate-toast ${styles[type] || styles.success}`;
+      el.textContent = message;
+      container.appendChild(el);
+      setTimeout(() => {
+        el.style.opacity = '0';
+        el.style.transition = 'opacity 0.25s';
+        setTimeout(() => el.remove(), 250);
+      }, 3000);
+    }
+
+    /*************************************************************************
+     * 4. HTML5 Canvas 高解像度インフォグラフィック描画エンジン
+     *************************************************************************/
+    function drawRoundRectPath(ctx, x, y, w, h, r) {
+      const radius = typeof r === 'number'
+        ? { tl: r, tr: r, br: r, bl: r }
+        : { tl: r.tl || 0, tr: r.tr || 0, br: r.br || 0, bl: r.bl || 0 };
+
+      ctx.beginPath();
+      ctx.moveTo(x + radius.tl, y);
+      ctx.lineTo(x + w - radius.tr, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + radius.tr);
+      ctx.lineTo(x + w, y + h - radius.br);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - radius.br, y + h);
+      ctx.lineTo(x + radius.bl, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - radius.bl);
+      ctx.lineTo(x, y + radius.tl);
+      ctx.quadraticCurveTo(x, y, x + radius.tl, y);
+      ctx.closePath();
+    }
+
+    /**
+     * サマリーカード描画ヘルパー
+     */
+    function drawSummaryCard(ctx, x, y, w, h, label, count, accentColor, theme) {
+      ctx.save();
+      // ドロップシャドウ
+      ctx.shadowColor = theme.cardShadow;
+      ctx.shadowBlur = 24;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 8;
+
+      drawRoundRectPath(ctx, x, y, w, h, 20);
+      ctx.fillStyle = theme.cardBg;
+      ctx.fill();
+      ctx.restore();
+
+      // 枠線
+      ctx.save();
+      drawRoundRectPath(ctx, x, y, w, h, 20);
+      ctx.strokeStyle = theme.cardBorder;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // カード内クリップして上部カラーラインを描画
+      ctx.clip();
+      ctx.fillStyle = accentColor;
+      ctx.fillRect(x, y, w, 10);
+      ctx.restore();
+
+      // ラベルテキスト
+      ctx.fillStyle = theme.label;
+      ctx.font = `700 ${Math.round(h * 0.165)}px "Noto Sans JP", Inter, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, x + w / 2, y + h * 0.34);
+
+      // 大きな数値 + 「件」
+      const numStr = count.toLocaleString('ja-JP');
+      const numFontSize = Math.round(h * 0.37);
+      const unitFontSize = Math.round(h * 0.21);
+
+      ctx.font = `800 ${numFontSize}px Inter, "Noto Sans JP", sans-serif`;
+      const numWidth = ctx.measureText(numStr).width;
+      ctx.font = `700 ${unitFontSize}px "Noto Sans JP", sans-serif`;
+      const unitWidth = ctx.measureText('件').width;
+
+      const totalW = numWidth + unitWidth + 6;
+      const startX = x + (w - totalW) / 2;
+      const baseY = y + h * 0.72;
+
+      ctx.fillStyle = accentColor;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      ctx.font = `800 ${numFontSize}px Inter, "Noto Sans JP", sans-serif`;
+      ctx.fillText(numStr, startX, baseY);
+
+      ctx.font = `700 ${unitFontSize}px "Noto Sans JP", sans-serif`;
+      ctx.fillText('件', startX + numWidth + 6, baseY - 2);
+    }
+
+    /**
+     * 凡例描画ヘルパー
+     */
+    function drawLegend(ctx, centerX, y, theme, fontSize = 24) {
+      const boxSize = Math.round(fontSize * 0.85);
+      const gapText = 10;
+      const gapItems = 40;
+
+      ctx.font = `700 ${fontSize}px "Noto Sans JP", sans-serif`;
+      const w1 = boxSize + gapText + ctx.measureText('行った通報').width;
+      const w2 = boxSize + gapText + ctx.measureText('受けた通報').width;
+      const totalW = w1 + gapItems + w2;
+      let curX = centerX - totalW / 2;
+
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+
+      // 行った通報
+      drawRoundRectPath(ctx, curX, y - boxSize / 2, boxSize, boxSize, 4);
+      ctx.fillStyle = theme.madeColor;
+      ctx.fill();
+      ctx.fillStyle = theme.label;
+      ctx.fillText('行った通報', curX + boxSize + gapText, y + 1);
+
+      curX += w1 + gapItems;
+
+      // 受けた通報
+      drawRoundRectPath(ctx, curX, y - boxSize / 2, boxSize, boxSize, 4);
+      ctx.fillStyle = theme.receivedColor;
+      ctx.fill();
+      ctx.fillStyle = theme.label;
+      ctx.fillText('受けた通報', curX + boxSize + gapText, y + 1);
+    }
+
+    /**
+     * 横向きペア棒グラフ描画ヘルパー
+     */
+    function drawPairedBarChart(ctx, area, items, theme, options) {
+      const { x, y, w, h } = area;
+      const { showEnglish } = options;
+
+      if (items.length === 0) {
+        ctx.fillStyle = theme.subtitle;
+        ctx.font = '600 26px "Noto Sans JP", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('表示する通報データがありません', x + w / 2, y + h / 2);
+        return;
+      }
+
+      const maxVal = Math.max(1, ...items.flatMap(it => [it.made, it.received]));
+      const count = items.length;
+
+      // 左ラベル領域・右数値領域の計算
+      const labelAreaW = Math.min(340, Math.max(220, Math.round(w * 0.31)));
+      const axisX = x + labelAreaW + 22;
+      const rightNumberMargin = 78;
+      const maxBarW = Math.max(120, (x + w) - axisX - rightNumberMargin);
+
+      // 行高さ・バー高さの自動スケーリング
+      const rowH = h / count;
+      const barGap = Math.max(3, Math.min(8, Math.round(rowH * 0.08)));
+      const maxBarH = Math.min(30, Math.max(10, Math.floor((rowH * 0.68 - barGap) / 2)));
+      const barH = maxBarH;
+      const pairH = barH * 2 + barGap;
+
+      const labelFontSize = Math.min(25, Math.max(15, Math.round(rowH * (showEnglish ? 0.27 : 0.32))));
+      const enFontSize = Math.min(14, Math.max(10, Math.round(labelFontSize * 0.56)));
+      const valFontSize = Math.min(23, Math.max(14, Math.round(barH * 0.88)));
+
+      // 縦の基準軸ライン
+      ctx.save();
+      ctx.strokeStyle = theme.axisLine;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(axisX, y + 4);
+      ctx.lineTo(axisX, y + h - 4);
+      ctx.stroke();
+      ctx.restore();
+
+      items.forEach((item, idx) => {
+        const rowCenterY = y + idx * rowH + rowH / 2;
+        const bar1Y = rowCenterY - pairH / 2;
+        const bar2Y = bar1Y + barH + barGap;
+
+        // 左側カテゴリラベル（日本語＋任意で英語原文）
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+
+        if (showEnglish) {
+          ctx.fillStyle = theme.label;
+          ctx.font = `700 ${labelFontSize}px "Noto Sans JP", sans-serif`;
+          ctx.fillText(item.labelJa, axisX - 20, rowCenterY - enFontSize * 0.65, labelAreaW);
+
+          ctx.fillStyle = theme.subLabel;
+          ctx.font = `600 ${enFontSize}px Inter, monospace`;
+          ctx.fillText(item.rawKey, axisX - 20, rowCenterY + labelFontSize * 0.58, labelAreaW);
+        } else {
+          ctx.fillStyle = theme.label;
+          ctx.font = `700 ${labelFontSize}px "Noto Sans JP", sans-serif`;
+          ctx.fillText(item.labelJa, axisX - 20, rowCenterY, labelAreaW);
+        }
+
+        // 1本目：行った通報バー
+        const madeW = item.made > 0 ? Math.max(6, (item.made / maxVal) * maxBarW) : 0;
+        if (madeW > 0) {
+          const r = Math.min(6, barH / 2, madeW / 2);
+          drawRoundRectPath(ctx, axisX + 1.5, bar1Y, madeW, barH, { tl: 0, bl: 0, tr: r, br: r });
+          ctx.fillStyle = theme.madeColor;
+          ctx.fill();
+        }
+        // 数値表示（0件も含めてくっきり表示）
+        ctx.fillStyle = item.made > 0 ? theme.valueText : theme.subLabel;
+        ctx.font = `700 ${valFontSize}px Inter, "Noto Sans JP", sans-serif`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(String(item.made), axisX + madeW + 14, bar1Y + barH / 2 + 1);
+
+        // 2本目：受けた通報バー
+        const recvW = item.received > 0 ? Math.max(6, (item.received / maxVal) * maxBarW) : 0;
+        if (recvW > 0) {
+          const r = Math.min(6, barH / 2, recvW / 2);
+          drawRoundRectPath(ctx, axisX + 1.5, bar2Y, recvW, barH, { tl: 0, bl: 0, tr: r, br: r });
+          ctx.fillStyle = theme.receivedColor;
+          ctx.fill();
+        }
+        // 数値表示
+        ctx.fillStyle = item.received > 0 ? theme.valueText : theme.subLabel;
+        ctx.font = `700 ${valFontSize}px Inter, "Noto Sans JP", sans-serif`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(String(item.received), axisX + recvW + 14, bar2Y + barH / 2 + 1);
+      });
+    }
+
+    /**
+     * メイン描画関数（縦長・正方形・横長すべてに最適化）
+     */
+    function renderCanvas() {
+      const canvas = document.getElementById('report-canvas');
+      const ctx = canvas.getContext('2d');
+      const ratioCfg = RATIOS[State.ratio];
+      const theme = THEMES[State.theme];
+
+      const W = ratioCfg.width;
+      const H = ratioCfg.height;
+      canvas.width = W;
+      canvas.height = H;
+
+      document.getElementById('resolution-badge').textContent = ratioCfg.label;
+
+      // 背景塗りつぶし
+      ctx.fillStyle = theme.bg;
+      ctx.fillRect(0, 0, W, H);
+
+      // データ集計・フィルタ・ソート
+      const { items: rawItems, totalMade, totalReceived } = normalizeReportData(State.rawData);
+      let items = State.hideZero ? rawItems.filter(it => it.total > 0) : [...rawItems];
+
+      if (State.sortBy === 'received') {
+        items.sort((a, b) => (b.received - a.received) || (b.total - a.total));
+      } else if (State.sortBy === 'made') {
+        items.sort((a, b) => (b.made - a.made) || (b.total - a.total));
+      } else {
+        items.sort((a, b) => (b.total - a.total) || (b.received - a.received));
+      }
+
+      const titleText = State.title.trim() || '通報履歴まとめ';
+      const subText = State.subtitle.trim();
+
+      if (State.ratio === 'landscape') {
+        // ==================== 横長 (1600x900) 2カラムレイアウト ====================
+        const padX = 72;
+        const padY = 64;
+        const leftColW = 470;
+
+        // 左カラム：タイトル＆サブタイトル
+        ctx.fillStyle = theme.title;
+        ctx.font = '800 44px "Noto Sans JP", Inter, sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillText(titleText, padX, padY, leftColW);
+
+        let curY = padY + 62;
+        if (subText) {
+          ctx.fillStyle = theme.subtitle;
+          ctx.font = '600 22px "Noto Sans JP", Inter, sans-serif';
+          ctx.fillText(subText, padX, curY, leftColW);
+          curY += 42;
+        } else {
+          curY += 16;
+        }
+
+        // 左カラム：サマリーカード2枚（縦並び）
+        const cardH = 225;
+        const cardGap = 28;
+        drawSummaryCard(ctx, padX, curY, leftColW, cardH, '行った通報', totalMade, theme.madeColor, theme);
+        drawSummaryCard(ctx, padX, curY + cardH + cardGap, leftColW, cardH, '受けた通報', totalReceived, theme.receivedColor, theme);
+
+        // 左カラム下部：凡例
+        drawLegend(ctx, padX + leftColW / 2, H - 72, theme, 22);
+
+        // 右カラム：横向きペア棒グラフ
+        const chartX = padX + leftColW + 56;
+        const chartW = W - chartX - padX;
+        drawPairedBarChart(
+          ctx,
+          { x: chartX, y: padY, w: chartW, h: H - padY * 2 },
+          items,
+          theme,
+          { showEnglish: State.showEnglish }
+        );
+      } else {
+        // ==================== 縦長 (1200x1600) & 正方形 (1200x1200) ====================
+        const isSquare = State.ratio === 'square';
+        const padX = 84;
+        const topPad = isSquare ? 56 : 82;
+
+        // タイトル
+        ctx.fillStyle = theme.title;
+        ctx.font = `800 ${isSquare ? 48 : 54}px "Noto Sans JP", Inter, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillText(titleText, W / 2, topPad, W - padX * 2);
+
+        let curY = topPad + (isSquare ? 64 : 74);
+
+        // サブタイトル（任意）
+        if (subText) {
+          ctx.fillStyle = theme.subtitle;
+          ctx.font = `600 ${isSquare ? 22 : 24}px "Noto Sans JP", Inter, sans-serif`;
+          ctx.fillText(subText, W / 2, curY, W - padX * 2);
+          curY += isSquare ? 42 : 48;
+        } else {
+          curY += isSquare ? 14 : 24;
+        }
+
+        // サマリーカード2枚（横並び）
+        const cardGap = 36;
+        const cardW = (W - padX * 2 - cardGap) / 2;
+        const cardH = isSquare ? 185 : 230;
+        drawSummaryCard(ctx, padX, curY, cardW, cardH, '行った通報', totalMade, theme.madeColor, theme);
+        drawSummaryCard(ctx, padX + cardW + cardGap, curY, cardW, cardH, '受けた通報', totalReceived, theme.receivedColor, theme);
+
+        curY += cardH + (isSquare ? 44 : 58);
+
+        // 凡例
+        drawLegend(ctx, W / 2, curY, theme, isSquare ? 22 : 26);
+
+        curY += isSquare ? 34 : 46;
+
+        // ペア棒グラフ
+        const bottomPad = isSquare ? 44 : 64;
+        drawPairedBarChart(
+          ctx,
+          { x: padX, y: curY, w: W - padX * 2, h: H - curY - bottomPad },
+          items,
+          theme,
+          { showEnglish: State.showEnglish }
+        );
+      }
+    }
+
+    /*************************************************************************
+     * 5. ファイル入力処理（JSON単体 & ZIP自動検出）
+     *************************************************************************/
+    async function handleFileUpload(file) {
+      if (!file) return;
+      const nameLower = file.name.toLowerCase();
+
+      try {
+        if (nameLower.endsWith('.zip')) {
+          await processZip(file);
+        } else if (nameLower.endsWith('.json')) {
+          const text = await file.text();
+          const parsed = JSON.parse(text);
+          // 検証
+          normalizeReportData(parsed);
+
+          State.zipDetectedGames = [];
+          updateZipSwitcherUI();
+
+          // ファイル名からゲームを自動推測
+          if (nameLower.includes('tft')) {
+            applyGameData('tft', 'TFT 通報履歴まとめ', parsed, file.name);
+          } else if (nameLower.includes('valorant')) {
+            applyGameData('valorant', 'VALORANT 通報履歴まとめ', parsed, file.name);
+          } else if (nameLower.includes('grouped_reports')) {
+            applyGameData('lol', 'League of Legends 通報履歴まとめ', parsed, file.name);
+          } else {
+            applyGameData('custom', State.title, parsed, file.name);
+          }
+          showToast(`「${file.name}」を読み込みました`, 'success');
+        } else {
+          showToast('JSONファイルまたはZIPファイルを選択してください', 'error');
+        }
+      } catch (err) {
+        console.error(err);
+        showToast(`読み込みエラー: ${err.message}`, 'error');
+      }
+    }
+
+    async function processZip(file) {
+      const zip = await JSZip.loadAsync(file);
+      const targets = [
+        { key: 'valorant', label: 'VALORANT', defaultTitle: 'VALORANT 通報履歴まとめ', match: p => p.endsWith('valorant_grouped_reports.json') },
+        { key: 'lol',      label: 'LoL',      defaultTitle: 'League of Legends 通報履歴まとめ', match: p => p.endsWith('leagueoflegends/grouped_reports.json') || (p.endsWith('grouped_reports.json') && !p.includes('valorant') && !p.includes('tft')) },
+        { key: 'tft',      label: 'TFT',      defaultTitle: 'TFT 通報履歴まとめ', match: p => p.endsWith('tft_grouped_reports.json') },
+      ];
+
+      const detected = [];
+      for (const entry of Object.values(zip.files)) {
+        if (entry.dir) continue;
+        const lower = entry.name.toLowerCase();
+        for (const t of targets) {
+          if (t.match(lower) && !detected.some(d => d.key === t.key)) {
+            const txt = await entry.async('string');
+            try {
+              const json = JSON.parse(txt);
+              const norm = normalizeReportData(json);
+              detected.push({
+                key: t.key,
+                label: t.label,
+                defaultTitle: t.defaultTitle,
+                data: json,
+                totalCount: norm.totalMade + norm.totalReceived,
+                entryName: entry.name
+              });
+            } catch (e) {
+              console.warn(`Parse skipped for ${entry.name}:`, e);
+            }
+          }
+        }
+      }
+
+      if (detected.length === 0) {
+        showToast('ZIP内に通報データJSON（grouped_reports.json等）が見つかりませんでした', 'error');
+        return;
+      }
+
+      // 件数が多いゲーム（またはVALORANT優先）を最初に表示
+      detected.sort((a, b) => b.totalCount - a.totalCount);
+      State.zipDetectedGames = detected;
+      updateZipSwitcherUI();
+
+      const first = detected[0];
+      applyGameData(first.key, first.defaultTitle, first.data, `${file.name} (${first.label})`);
+      showToast(`ZIPから ${detected.length} 件のゲーム通報データを検出しました`, 'success');
+    }
+
+    function applyGameData(gameKey, newTitle, jsonData, sourceLabel) {
+      State.gameKey = gameKey;
+      State.rawData = jsonData;
+      State.title = newTitle;
+      State.sourceLabel = sourceLabel;
+
+      document.getElementById('title-input').value = newTitle;
+      document.getElementById('data-source-badge').textContent = sourceLabel;
+      updateZipSwitcherUI();
+      renderCanvas();
+    }
+
+    function updateZipSwitcherUI() {
+      const box = document.getElementById('zip-game-switcher');
+      const btnWrap = document.getElementById('zip-game-buttons');
+
+      if (State.zipDetectedGames.length === 0) {
+        box.classList.add('hidden');
+        return;
+      }
+
+      box.classList.remove('hidden');
+      btnWrap.innerHTML = State.zipDetectedGames.map(g => {
+        const active = g.key === State.gameKey;
+        return `
+          <button type="button" data-zip-game="${g.key}"
+            class="px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${active ? 'bg-teal-600 text-white shadow-sm' : 'bg-white text-slate-700 border border-teal-200 hover:bg-teal-100'}">
+            <span>${g.label}</span>
+            <span class="font-mono text-[10px] px-1.5 py-0.5 rounded ${active ? 'bg-black/20 text-white' : 'bg-slate-100 text-slate-500'}">${g.totalCount}件</span>
+          </button>
+        `;
+      }).join('');
+
+      btnWrap.querySelectorAll('button').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const found = State.zipDetectedGames.find(g => g.key === btn.dataset.zipGame);
+          if (found) {
+            applyGameData(found.key, found.defaultTitle, found.data, `ZIP (${found.label})`);
+          }
+        });
+      });
+    }
+
+    /*************************************************************************
+     * 6. 出力アクション（PNGダウンロード / クリップボードコピー）
+     *************************************************************************/
+    function downloadPNG() {
+      try {
+        const canvas = document.getElementById('report-canvas');
+        const link = document.createElement('a');
+        const prefix = State.gameKey === 'custom' ? 'riot' : State.gameKey;
+        link.download = `${prefix}_reports_summary.png`;
+        link.href = canvas.toDataURL('image/png');
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        showToast(`PNG画像（${link.download}）をダウンロードしました`, 'success');
+      } catch (err) {
+        showToast('画像のダウンロードに失敗しました', 'error');
+      }
+    }
+
+    async function copyImageToClipboard() {
+      const canvas = document.getElementById('report-canvas');
+      if (!navigator.clipboard || typeof ClipboardItem === 'undefined') {
+        showToast('このブラウザ環境では画像の直接コピーに非対応です。PNGダウンロードをご利用ください。', 'error');
+        return;
+      }
+      try {
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+        if (!blob) throw new Error('画像データの生成に失敗しました');
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        showToast('画像をクリップボードにコピーしました！DiscordやXにそのまま貼り付けできます', 'success');
+      } catch (err) {
+        console.error(err);
+        showToast('クリップボードへの書き込みが制限されています。PNGダウンロードをご利用ください。', 'error');
+      }
+    }
+
+    /*************************************************************************
+     * 7. イベントリスナー設定 & 初期化
+     *************************************************************************/
+    window.addEventListener('DOMContentLoaded', () => {
+      lucide.createIcons();
+
+      const dropZone = document.getElementById('drop-zone');
+      const fileInput = document.getElementById('file-input');
+
+      // ファイル選択＆ドラッグ＆ドロップ
+      dropZone.addEventListener('click', () => fileInput.click());
+      fileInput.addEventListener('change', e => {
+        if (e.target.files[0]) handleFileUpload(e.target.files[0]);
+        e.target.value = '';
+      });
+
+      ['dragenter', 'dragover'].forEach(ev => {
+        dropZone.addEventListener(ev, e => {
+          e.preventDefault();
+          dropZone.classList.add('drop-active');
+        });
+      });
+      ['dragleave', 'drop'].forEach(ev => {
+        dropZone.addEventListener(ev, e => {
+          e.preventDefault();
+          dropZone.classList.remove('drop-active');
+        });
+      });
+      dropZone.addEventListener('drop', e => {
+        const file = e.dataTransfer.files[0];
+        if (file) handleFileUpload(file);
+      });
+
+      // サンプルデータボタン
+      document.getElementById('sample-btn').addEventListener('click', () => {
+        State.zipDetectedGames = [];
+        applyGameData('valorant', 'VALORANT 通報履歴まとめ', SAMPLE_DATA, 'サンプルデータ (VALORANT)');
+        showToast('VALORANTのサンプルデータを読み込みました', 'info');
+      });
+
+      // JSON直接貼り付け反映
+      document.getElementById('apply-json-btn').addEventListener('click', () => {
+        const txt = document.getElementById('json-paste-input').value.trim();
+        if (!txt) {
+          showToast('JSONテキストを入力してください', 'error');
+          return;
+        }
+        try {
+          const parsed = JSON.parse(txt);
+          normalizeReportData(parsed);
+          State.zipDetectedGames = [];
+          applyGameData(State.gameKey, State.title, parsed, '貼り付けたJSONデータ');
+          showToast('JSONデータを反映しました', 'success');
+        } catch (err) {
+          showToast(`JSONの形式が正しくありません: ${err.message}`, 'error');
+        }
+      });
+
+      // タイトル＆サブタイトル入力
+      document.getElementById('title-input').addEventListener('input', e => {
+        State.title = e.target.value;
+        renderCanvas();
+      });
+      document.getElementById('subtitle-input').addEventListener('input', e => {
+        State.subtitle = e.target.value;
+        renderCanvas();
+      });
+
+      // テーマ切替
+      document.querySelectorAll('.theme-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          State.theme = btn.dataset.theme;
+          document.querySelectorAll('.theme-btn').forEach(b => {
+            const active = b.dataset.theme === State.theme;
+            b.className = active
+              ? 'theme-btn p-2.5 rounded-xl border-2 border-teal-600 bg-teal-50/50 text-left transition'
+              : 'theme-btn p-2.5 rounded-xl border border-slate-200 hover:border-slate-300 bg-white text-left transition';
+          });
+          renderCanvas();
+        });
+      });
+
+      // 画像サイズ・比率切替
+      document.querySelectorAll('.ratio-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          State.ratio = btn.dataset.ratio;
+          document.querySelectorAll('.ratio-btn').forEach(b => {
+            const active = b.dataset.ratio === State.ratio;
+            b.className = active
+              ? 'ratio-btn py-2 px-2 rounded-xl border-2 border-teal-600 bg-teal-50/50 text-center transition'
+              : 'ratio-btn py-2 px-2 rounded-xl border border-slate-200 hover:border-slate-300 bg-white text-center transition';
+          });
+          renderCanvas();
+        });
+      });
+
+      // 表示オプション
+      document.getElementById('sort-select').addEventListener('change', e => {
+        State.sortBy = e.target.value;
+        renderCanvas();
+      });
+      document.getElementById('show-en-toggle').addEventListener('change', e => {
+        State.showEnglish = e.target.checked;
+        renderCanvas();
+      });
+      document.getElementById('hide-zero-toggle').addEventListener('change', e => {
+        State.hideZero = e.target.checked;
+        renderCanvas();
+      });
+
+      // 出力ボタン
+      document.getElementById('download-btn').addEventListener('click', downloadPNG);
+      document.getElementById('copy-btn').addEventListener('click', copyImageToClipboard);
+
+      // 初回描画 & Webフォント読み込み完了後の再描画
+      renderCanvas();
+      if (document.fonts && document.fonts.ready) {
+        document.fonts.ready.then(() => renderCanvas());
+      }
+    });
+  </script>
+</body>
+</html>
